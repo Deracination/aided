@@ -14,7 +14,7 @@ my $check;
 my $update;
 my $fetch;
 my $dbdir="$Bin/db";
-my $who='chris';
+my $who=$ENV{USER};
 my $mail;
 
 GetOptions(
@@ -25,11 +25,13 @@ GetOptions(
     'who=s'     =>  \$who,
     'mail=s'    =>  \$mail,
     'verbose'   =>  \$verbose,
-) or die ("Usage: remote.pl [--check=NAME] [--update=NAME] [--fetch=NAME] [--db=DIR] [--mail=person\@nowhere.com] [--verbose]\n");
+) or die ("Usage: remote.pl [--who=username] [--check=NAME] [--update=NAME] [--fetch=NAME] [--db=DIR] [--mail=person\@nowhere.com] [--verbose]\n");
 
 if($update) {
+    die "--who required\n" unless $who;
     update($update,$dbdir,$who);
 } elsif($fetch) {
+    die "--who required\n" unless $who;
     fetch($fetch,$dbdir,$who);
 } else {
     opendir(my $dh,$dbdir);
@@ -103,6 +105,8 @@ sub check {
 
 sub update {
     my($site,$dbdir,$who)=@_;
+
+    say "Updating $site into $dbdir as $who";
 
     put_aide($site,$dbdir);
 
