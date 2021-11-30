@@ -1,8 +1,10 @@
 # AIDE Checker
-Run system integrity checks using [AIDE](https://aide.github.io/) against remote systems.
+Run system integrity checks using [AIDE](https://aide.github.io/) against remote systems via ssh, scp, and sudo.
+
+The account running *checker* must be able to ssh to each site and run sudo on the remote system.
 
 The AIDE executable, database, and configuration are stored on the local system (where checker is run)
-and copied to the remote system where AIDE is run.
+and copied to the remote system where AIDE is run (via ssh sudo).
 
 Configuration files are expected to live in a db directory in the same directory as the checker program, unless
 overridden by the --db command-line parameter.
