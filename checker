@@ -89,6 +89,25 @@ sub put_aide($$) {
 sub check {
     my($site,$dbdir)=@_;
 
+    my $retry=3;
+    do {
+        my $res = eval {
+            return _check($site,$dbdir);
+        };
+        if($@) {
+            warn $@;
+            sleep (7-$retry);
+        } else {
+            return $res;
+        }
+    } while($retry--);
+
+    return 0;
+}
+
+sub _check {
+    my($site,$dbdir)=@_;
+
     say "Checking $site";
 
     put_aide($site,$dbdir);
