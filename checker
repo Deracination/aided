@@ -96,7 +96,7 @@ sub check {
         };
         if($@) {
             warn $@;
-            sleep (7-$retry);
+            sleep (rand(60));
         } else {
             return $res;
         }
