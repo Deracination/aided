@@ -1,10 +1,14 @@
 #!/usr/bin/env perl
-use v5.30;
+use v5.20;
 use strict;
 use FindBin qw($Bin);
 use File::Basename;
 use Getopt::Long;
 use autodie;
+
+my $NRETRY=3;
+my $SSH='/usr/bin/ssh -t -t';
+my $SCP='/usr/bin/scp -p -q -C';
 
 my $AIDE_HOME='/var/lib/aide';
 my $AIDE_EXE='/usr/sbin/aide';
@@ -25,7 +29,10 @@ GetOptions(
     'who=s'     =>  \$who,
     'mail=s'    =>  \$mail,
     'verbose'   =>  \$verbose,
-) or die ("Usage: remote.pl [--who=username] [--check=NAME] [--update=NAME] [--fetch=NAME] [--db=DIR] [--mail=person\@nowhere.com] [--verbose]\n");
+) or die ("Usage: $0 [--who=username] [--check=NAME] [--update=NAME] [--fetch=NAME] [--db=DIR] [--mail=person\@nowhere.com] [--verbose]\n");
+
+$SSH.=' -v' if $verbose;
+$SCP.=' -v' if $verbose;
 
 if($update) {
     die "--who required\n" unless $who;
@@ -70,7 +77,7 @@ sub run_remote($) {
 
     foreach my $cmd (@$cmds) {
         say $cmd if $verbose;
-        system($cmd) == 0 or die ("$cmd: failed $?");
+        system($cmd) == 0 or die ("$cmd: failed $?\n");
     }
 }
 
@@ -80,7 +87,7 @@ sub put_aide($$) {
     put_as_root($site,"$dbdir/$site/aide",$AIDE_EXE);
 
     run_remote([
-        "ssh $site 'sudo chcon system_u:object_r:aide_exec_t:s0 $AIDE_EXE'",
+        "$SSH $site 'sudo chcon system_u:object_r:aide_exec_t:s0 $AIDE_EXE'",
     ]);
 
     put_as_root($site,"$dbdir/$site/aide.db.gz","$AIDE_HOME/aide.db.gz");
@@ -89,7 +96,7 @@ sub put_aide($$) {
 sub check {
     my($site,$dbdir)=@_;
 
-    my $retry=3;
+    my $retry=$NRETRY;
     do {
         my $res = eval {
             return _check($site,$dbdir);
@@ -113,7 +120,7 @@ sub _check {
     put_aide($site,$dbdir);
 
     foreach my $cmd (
-        "ssh $site 'sudo $AIDE_EXE --check'",
+        "$SSH $site 'sudo $AIDE_EXE --check'",
     ) {
         say $cmd if $verbose;
         system($cmd) == 0 or return 0;
@@ -131,12 +138,12 @@ sub update {
 
     put_as_root($site,"$dbdir/$site/aide.conf","/etc/aide.conf");
     run_remote([
-        "ssh $site 'sudo chcon system_u:object_r:etc_t:s0 /etc/aide.conf'",
+        "$SSH $site 'sudo chcon system_u:object_r:etc_t:s0 /etc/aide.conf'",
     ]);
 
     run_remote([
-        "ssh $site 'sudo $AIDE_EXE --init'", # --update doesn't work on old versions of aide
-        "ssh $site 'sudo cp -f -p $AIDE_HOME/aide.db.new.gz $AIDE_HOME/aide.db.gz; sudo ls -l $AIDE_HOME/aide.db.gz'",
+        "$SSH $site 'sudo $AIDE_EXE --init'", # --update doesn't work on old versions of aide
+        "$SSH $site 'sudo cp -f -p $AIDE_HOME/aide.db.new.gz $AIDE_HOME/aide.db.gz; sudo ls -l $AIDE_HOME/aide.db.gz'",
     ]);
 
     say "fetching updated aide.db.gz...";
@@ -167,9 +174,9 @@ sub fetch_as_who {
         # scp with -p to preserve mode - this is essential for the aide binary
         # as the config file cannot disable checking the original file mode of
         # the binary.
-        "ssh $site 'sudo cp -p -f $file $tmpf; sudo chown $who $tmpf'",
-        "scp -p -q -C $site:$tmpf $dest/$fn",
-        "ssh $site 'sudo rm -f $tmpf'",
+        "$SSH $site 'sudo cp -p -f $file $tmpf; sudo chown $who $tmpf'",
+        "$SCP $site:$tmpf $dest/$fn",
+        "$SSH $site 'sudo rm -f $tmpf'",
     ]);
 }
 
@@ -181,7 +188,7 @@ sub put_as_root {
 
     run_remote([
         # scp with -p to preserve mode - this is essential for the aide binary
-        "scp -p -q -C $file $site:/tmp/",
-        "ssh $site 'sudo mv -f /tmp/$fn $dest; sudo chown root.root $dest'",
+        "$SCP $file $site:/tmp/",
+        "$SSH $site 'sudo mv -f /tmp/$fn $dest; sudo chown root.root $dest'",
     ]);
 }
