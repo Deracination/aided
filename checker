@@ -7,7 +7,8 @@ use Getopt::Long;
 use autodie;
 
 my $NRETRY=3;
-my $SSH='/usr/bin/ssh -t -t';
+#my $SSH='/usr/bin/ssh -t -t -q';
+my $SSH='/usr/bin/ssh';
 my $SCP='/usr/bin/scp -p -q -C';
 
 my $AIDE_HOME='/var/lib/aide';
