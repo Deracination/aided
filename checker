@@ -12,12 +12,13 @@ my $SSH='/usr/bin/ssh';
 my $SCP='/usr/bin/scp -p -q -C';
 
 my $AIDE_HOME='/var/lib/aide';
-my $AIDE_EXE='/usr/sbin/aide';
+my $AIDE_ORG='/usr/sbin/aide';
+my $AIDE_EXE='/usr/sbin/aide-checker';
 
 my $verbose=0;
 my $check;
 my $update;
-my $fetch;
+my $init;
 my $dbdir="$Bin/db";
 my $who=$ENV{USER};
 my $mail;
@@ -25,12 +26,12 @@ my $mail;
 GetOptions(
     'check=s'   =>  \$check,
     'update=s'  =>  \$update,
-    'fetch=s'   =>  \$fetch,
+    'init=s'   =>  \$init,
     'db=s'      =>  \$dbdir,
     'who=s'     =>  \$who,
     'mail=s'    =>  \$mail,
     'verbose'   =>  \$verbose,
-) or die ("Usage: $0 [--who=username] [--check=NAME] [--update=NAME] [--fetch=NAME] [--db=DIR] [--mail=person\@nowhere.com] [--verbose]\n");
+) or die ("Usage: $0 [--who=username] [--check=NAME] [--update=NAME] [--init=NAME] [--db=DIR] [--mail=person\@nowhere.com] [--verbose]\n");
 
 $SSH.=' -v' if $verbose;
 $SCP.=' -v' if $verbose;
@@ -38,9 +39,9 @@ $SCP.=' -v' if $verbose;
 if($update) {
     die "--who required\n" unless $who;
     update($update,$dbdir,$who);
-} elsif($fetch) {
+} elsif($init) {
     die "--who required\n" unless $who;
-    fetch($fetch,$dbdir,$who);
+    init_server($init,$dbdir,$who);
 } else {
     opendir(my $dh,$dbdir);
     my @sites = grep { /^[^\.]/ && -d "$dbdir/$_" } sort readdir($dh);
@@ -67,6 +68,9 @@ if($update) {
         if($mail) {
             my $msg="AIDE checks ok for ".join(', ',@sites);
             system("echo '$msg'|mail -s 'AIDE checks ok' $mail") == 0 or die("Mail to $mail failed for $msg");
+        }
+        foreach my $site (@sites) {
+            say "$site OK";
         }
     }
 
@@ -151,14 +155,19 @@ sub update {
     fetch_as_who($site,"$AIDE_HOME/aide.db.gz",$who,"$dbdir/$site");
 }
 
-sub fetch {
+sub init_server {
     my($site,$dbdir,$who)=@_;
 
     my $dest="$dbdir/$site";
 
     -d $dest || mkdir($dest);
 
-    for my $file ("$AIDE_HOME/aide.db.gz",$AIDE_EXE,'/etc/aide.conf') {
+    run_remote([
+        "$SSH -t $site sudo -- '/bin/bash -c \"[[ -f /var/lib/aide/aide.db.gz ]] ||(echo aide init && aide --init && mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz)\"'",
+    ]);
+
+    for my $file ("$AIDE_HOME/aide.db.gz",$AIDE_ORG,'/etc/aide.conf') {
+        say "fetching $file...";
         fetch_as_who($site,$file,$who,$dest);
     }
 }
