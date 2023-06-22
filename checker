@@ -16,7 +16,6 @@ my $AIDE_ORG='/usr/sbin/aide';
 my $AIDE_EXE='/usr/sbin/aide-checker';
 
 my $verbose=0;
-my $check;
 my $update;
 my $init;
 my $dbdir="$Bin/db";
@@ -24,14 +23,13 @@ my $who=$ENV{USER};
 my $mail;
 
 GetOptions(
-    'check=s'   =>  \$check,
     'update=s'  =>  \$update,
     'init=s'   =>  \$init,
     'db=s'      =>  \$dbdir,
     'who=s'     =>  \$who,
     'mail=s'    =>  \$mail,
     'verbose'   =>  \$verbose,
-) or die ("Usage: $0 [--who=username] [--check=NAME] [--update=NAME] [--init=NAME] [--db=DIR] [--mail=person\@nowhere.com] [--verbose]\n");
+) or die ("Usage: $0 [--who=username] [--update=NAME] [--init=NAME] [--db=DIR] [--mail=person\@nowhere.com] [--verbose]\n");
 
 $SSH.=' -v' if $verbose;
 $SCP.=' -v' if $verbose;
@@ -47,8 +45,9 @@ if($update) {
     my @sites = grep { /^[^\.]/ && -d "$dbdir/$_" } sort readdir($dh);
     closedir($dh);
 
-    if($check) {
-        @sites = grep { $_ eq $check } @sites;
+    if(@ARGV) {
+        my %selected=map{ $_ => 1 } @ARGV;
+        @sites = grep { exists $selected{$_} } @sites;
     }
 
     my @failed;
