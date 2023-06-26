@@ -8,8 +8,8 @@ use autodie;
 
 my $NRETRY=3;
 #my $SSH='/usr/bin/ssh -t -t -q';
-my $SSH='/usr/bin/ssh';
-my $SCP='/usr/bin/scp -p -q -C';
+my $SSH='/usr/bin/ssh -q -o "StrictHostKeyChecking no" -o "UserKnownHostsFile /dev/null"';
+my $SCP='/usr/bin/scp -o "StrictHostKeyChecking no" -o "UserKnownHostsFile /dev/null" -p -q -C';
 
 my $AIDE_HOME='/var/lib/aide';
 my $AIDE_ORG='/usr/sbin/aide';
