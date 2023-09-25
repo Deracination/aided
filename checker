@@ -51,30 +51,38 @@ if($update) {
     }
 
     my @failed;
+    my @passed;
     foreach my $site (@sites) {
-        if(!check($site,$dbdir)) {
+        if(check($site,$dbdir)) {
+            push @passed,$site;
+        } else {
             push @failed,$site;
         }
     }
 
-    if(@failed) {
-        my $msg="Failed aide checks: ".join(',', @failed);
-        if($mail) {
-            system("echo '$msg'|mail -s 'Failed AIDE checks' $mail") == 0 or die("Mail to $mail failed for $msg");
-        }
-        die($msg."\n");
-    } else {
-        if($mail) {
-            my $msg="AIDE checks ok for ".join(', ',@sites);
-            system("echo '$msg'|mail -s 'AIDE checks ok' $mail") == 0 or die("Mail to $mail failed for $msg");
-        }
-        foreach my $site (@sites) {
-            say "$site OK";
-        }
+    my $msg=get_message(\@passed,\@failed);
+
+    if($mail) {
+        system("echo '$msg'|mail -s 'AIDE checks' $mail");
     }
 
+    say $msg;
     exit(0);
 }
+
+sub get_message($$) {
+    my($passed,$failed)=@_;
+
+    my $passes = @$passed ? join(', ',@$passed) : 'NONE';
+    my $fails = @$failed ? join(', ',@$failed) : 'NONE';
+
+    return <<EOF;
+Passed AIDE checks: $passes
+Failed: $fails
+
+EOF
+}
+
 
 sub run_remote($) {
     my $cmds=shift;
