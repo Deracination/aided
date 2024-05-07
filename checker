@@ -4,6 +4,8 @@ use strict;
 use FindBin qw($Bin);
 use File::Basename;
 use Getopt::Long;
+use JSON;
+use Term::ReadKey;
 use autodie;
 
 my $NRETRY=3;
@@ -13,7 +15,7 @@ my $SCP='/usr/bin/scp -o "StrictHostKeyChecking no" -o "UserKnownHostsFile /dev/
 
 my $AIDE_HOME='/var/lib/aide';
 my $AIDE_ORG='/usr/sbin/aide';
-my $AIDE_EXE='/usr/sbin/aide-checker';
+my $AIDE_EXE='/usr/sbin/aide';
 
 my $verbose=0;
 my $update;
@@ -22,14 +24,15 @@ my $dbdir="$Bin/db";
 my $who=$ENV{USER};
 my $mail;
 
+sub get_message($$);
+sub get_config($$);
+
 GetOptions(
-    'update=s'  =>  \$update,
-    'init=s'   =>  \$init,
     'db=s'      =>  \$dbdir,
-    'who=s'     =>  \$who,
+    'update=s'      =>  \$update,
     'mail=s'    =>  \$mail,
     'verbose'   =>  \$verbose,
-) or die ("Usage: $0 [--who=username] [--update=NAME] [--init=NAME] [--db=DIR] [--mail=person\@nowhere.com] [--verbose]\n");
+) or die ("Usage: $0 [--update=NAME] [--db=DIR] [--mail=person\@nowhere.com] [--verbose]\n");
 
 $SSH.=' -v' if $verbose;
 $SCP.=' -v' if $verbose;
@@ -37,9 +40,6 @@ $SCP.=' -v' if $verbose;
 if($update) {
     die "--who required\n" unless $who;
     update($update,$dbdir,$who);
-} elsif($init) {
-    die "--who required\n" unless $who;
-    init_server($init,$dbdir,$who);
 } else {
     opendir(my $dh,$dbdir);
     my @sites = grep { /^[^\.]/ && -d "$dbdir/$_" } sort readdir($dh);
@@ -50,8 +50,8 @@ if($update) {
         @sites = grep { exists $selected{$_} } @sites;
     }
 
-    my @failed;
     my @passed;
+	my @failed;
     foreach my $site (@sites) {
         if(check($site,$dbdir)) {
             push @passed,$site;
@@ -84,25 +84,18 @@ EOF
 }
 
 
-sub run_remote($) {
+# returns 1 if succeed or $ignore=1, 0 if fails
+sub run_remote($;$) {
     my $cmds=shift;
+	my $ignore=shift // 0;
 
     foreach my $cmd (@$cmds) {
         say $cmd if $verbose;
-        system($cmd) == 0 or die ("$cmd: failed $?\n");
+		my $res=system($cmd);
+        if($res != 0 && !$ignore) { warn ("$cmd: failed $?\n"); return 0 }
     }
-}
 
-sub put_aide($$) {
-    my($site,$dbdir)=@_;
-
-    put_as_root($site,"$dbdir/$site/aide",$AIDE_EXE);
-
-    run_remote([
-        "$SSH $site 'sudo chcon system_u:object_r:aide_exec_t:s0 $AIDE_EXE'",
-    ]);
-
-    put_as_root($site,"$dbdir/$site/aide.db.gz","$AIDE_HOME/aide.db.gz");
+	return 1;
 }
 
 sub check {
@@ -124,88 +117,94 @@ sub check {
     return 0;
 }
 
-sub _check {
-    my($site,$dbdir)=@_;
-
-    say "Checking $site";
-
-    put_aide($site,$dbdir);
-
-    foreach my $cmd (
-        "$SSH $site 'sudo $AIDE_EXE --check'",
-    ) {
-        say $cmd if $verbose;
-        system($cmd) == 0 or return 0;
-    }
-
-    return 1;
-}
-
 sub update {
     my($site,$dbdir,$who)=@_;
 
-    say "Updating $site into $dbdir as $who";
+	my %config=get_config($site,$dbdir);
 
-    put_aide($site,$dbdir);
+    say "Updating $site";
 
-    put_as_root($site,"$dbdir/$site/aide.conf","/etc/aide.conf");
-    run_remote([
-        "$SSH $site 'sudo chcon system_u:object_r:etc_t:s0 /etc/aide.conf'",
-    ]);
+	my @remote;
 
-    run_remote([
-        "$SSH $site 'sudo $AIDE_EXE --init'", # --update doesn't work on old versions of aide
-        "$SSH $site 'sudo cp -f -p $AIDE_HOME/aide.db.new.gz $AIDE_HOME/aide.db.gz; sudo ls -l $AIDE_HOME/aide.db.gz'",
-    ]);
+	if(ref $config{update}) {
+		push @remote,$config{update}->@*;
+	} else {
+		push @remote,$config{update};
+	}
 
-    say "fetching updated aide.db.gz...";
-    fetch_as_who($site,"$AIDE_HOME/aide.db.gz",$who,"$dbdir/$site");
+	if(grep /SUDO_PW/, @remote) {
+		print "Enter sudo password: ";
+
+		ReadMode('noecho');
+		ReadMode('raw');
+
+		my $pw='';
+
+		while(1) {
+			my $c;
+			1 until defined($c=ReadKey(-1));
+			last if $c eq "\n";
+			print "*";
+			$pw .= $c;
+		}
+
+		ReadMode('restore');
+
+		foreach (@remote) {
+			s/\{SUDO_PW\}/$pw/g; # provide sudo password where needed
+		}
+	}
+
+	foreach my $remote (@remote) {
+		run_remote(["$SSH $site '$remote'"],1) or die ("failed!\n");
+	}
 }
 
-sub init_server {
-    my($site,$dbdir,$who)=@_;
+sub _check {
+    my($site,$dbdir)=@_;
 
-    my $dest="$dbdir/$site";
+	my %config=get_config($site,$dbdir);
 
-    -d $dest || mkdir($dest);
+    say "Checking $site";
 
-    run_remote([
-        "$SSH -t $site sudo -- '/bin/bash -c \"[[ -f /var/lib/aide/aide.db.gz ]] ||(echo aide init && aide --init && mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz)\"'",
-    ]);
-
-    for my $file ("$AIDE_HOME/aide.db.gz",$AIDE_ORG,'/etc/aide.conf') {
-        say "fetching $file...";
-        fetch_as_who($site,$file,$who,$dest);
-    }
+	return run_remote([
+        "$SSH $site '$config{check}'",
+	]);
 }
 
-sub fetch_as_who {
-    my($site,$file,$who,$dest)=@_;
 
-    say "Fetching $file => $dest" if $verbose;
+sub	get_config($$) {
+	my($site,$dbdir)=@_;
 
-    my $fn=basename($file);
-    my $tmpf="/tmp/$fn";
+	my %config=(
+		'update'	=>	[
+			"sudo $AIDE_EXE --update",
+        	"echo {SUDO_PW}|sudo -S mv $AIDE_HOME/aide.db.new.gz $AIDE_HOME/aide.db.gz"
+		],
+		'check'		=>	"sudo $AIDE_EXE --check",
+	);
 
-    run_remote([
-        # scp with -p to preserve mode - this is essential for the aide binary
-        # as the config file cannot disable checking the original file mode of
-        # the binary.
-        "$SSH $site 'sudo cp -p -f $file $tmpf; sudo chown $who $tmpf'",
-        "$SCP $site:$tmpf $dest/$fn",
-        "$SSH $site 'sudo rm -f $tmpf'",
-    ]);
-}
+	# allow site-specific configurations which define update and check
+	# - this lets us support both ubuntu and almalinux which put aide
+	# in different places
+	my $cfile="$dbdir/$site/config.json";
 
-sub put_as_root {
-    my($site,$file,$dest)=@_;
-    say "Putting $file => $dest" if $verbose;
+	if(-r $cfile) {
+		open(my $fh,'<',$cfile);
 
-    my $fn=basename($file);
+		local $/; # slurp
+		my $str = <$fh>;
 
-    run_remote([
-        # scp with -p to preserve mode - this is essential for the aide binary
-        "$SCP $file $site:/tmp/",
-        "$SSH $site 'sudo mv -f /tmp/$fn $dest; sudo chown root.root $dest'",
-    ]);
+		close($fh);
+
+		my $sc = decode_json($str);
+
+
+		%config=(%config,$sc->%*);
+	}
+
+	#	use Data::Dumper;
+	#	say Dumper \%config;
+
+	return %config;
 }
