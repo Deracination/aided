@@ -104,7 +104,13 @@ sub check {
     my $retry=$NRETRY;
     do {
         my $res = eval {
-            return _check($site,$dbdir);
+            say "################################## Checking $site";
+
+            my $r = _check($site,$dbdir);
+
+            say "################################## Finished $site";
+
+            return $r;
         };
         if($@) {
             warn $@;
@@ -164,8 +170,6 @@ sub _check {
     my($site,$dbdir)=@_;
 
 	my %config=get_config($site,$dbdir);
-
-    say "Checking $site";
 
 	return run_remote([
         "$SSH $site '$config{check}'",
