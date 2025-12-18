@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"math/rand"
+	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -19,20 +21,38 @@ import (
 )
 
 const (
-	nRetry   = 3
 	aideHome = "/var/lib/aide"
 	aideExe  = "/usr/sbin/aide"
 )
 
 var (
-	verbose bool
-	sshOpts = []string{"-q", "-o", "StrictHostKeyChecking no", "-o", "UserKnownHostsFile /dev/null"}
+	verbose    bool
+	sshVerbose bool
+	quiet      bool
+	sshOpts    = []string{"-q", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"}
+	logFile    *os.File
+	ctx        context.Context
+	cancel     context.CancelFunc
 )
+
+// printq prints to stdout unless quiet mode is enabled
+func printq(format string, a ...any) {
+	if !quiet {
+		fmt.Printf(format, a...)
+	}
+}
+
+// fprintq prints to a writer unless quiet mode is enabled
+func fprintq(w io.Writer, format string, a ...any) {
+	if !quiet {
+		fmt.Fprintf(w, format, a...)
+	}
+}
 
 // Config represents site-specific configuration
 type Config struct {
-	Update interface{} `json:"update"` // Can be string or []string
-	Check  string      `json:"check"`
+	Update any    `json:"update"` // Can be string or []string
+	Check  string `json:"check"`
 }
 
 // checkResult holds the result of a site check
@@ -61,26 +81,48 @@ func main() {
 		defaultDbDir = filepath.Join(".", "db")
 	}
 
+	var logPath string
+
 	flag.StringVar(&dbDir, "db", defaultDbDir, "database directory")
-	flag.StringVar(&update, "update", "", "site to update")
-	flag.StringVar(&mail, "mail", "", "email address for notifications")
-	flag.BoolVar(&verbose, "verbose", false, "enable verbose output")
-	flag.IntVar(&parallel, "parallel", 0, "max parallel checks (0 = unlimited, 1 = sequential)")
+	flag.StringVar(&update, "u", "", "site to update")
+	flag.StringVar(&mail, "m", "", "email address for notifications")
+	flag.BoolVar(&verbose, "v", false, "print commands as they are executed")
+	flag.BoolVar(&sshVerbose, "V", false, "enable SSH verbose output")
+	flag.BoolVar(&quiet, "q", false, "quiet mode - suppress all output except errors")
+	flag.IntVar(&parallel, "p", 0, "max parallel checks (0 = unlimited, 1 = sequential)")
+	flag.StringVar(&logPath, "log", "./aided.log", "log file for SSH command output")
 	flag.Parse()
 
-	// Update SSH options for verbose mode
-	if verbose {
-		sshOpts = []string{"-v", "-o", "StrictHostKeyChecking no", "-o", "UserKnownHostsFile /dev/null"}
+	// Quiet mode overrides verbose
+	if quiet {
+		verbose = false
 	}
 
-	who := os.Getenv("USER")
+	// Set up signal handling for graceful shutdown
+	ctx, cancel = context.WithCancel(context.Background())
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		printq("\nReceived interrupt, terminating SSH commands...\n")
+		cancel()
+	}()
+
+	// Open log file
+	logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not open log file %s: %v\n", logPath, err)
+	} else {
+		defer logFile.Close()
+	}
+
+	// Update SSH options for verbose mode
+	if sshVerbose {
+		sshOpts = []string{"-v", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"}
+	}
 
 	if update != "" {
-		if who == "" {
-			fmt.Fprintln(os.Stderr, "--who required (or set USER env var)")
-			os.Exit(1)
-		}
-		if err := updateSite(update, dbDir, who); err != nil {
+		if err := updateSite(update, dbDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Update failed: %v\n", err)
 			os.Exit(1)
 		}
@@ -109,11 +151,17 @@ func main() {
 		sites = filtered
 	}
 
+	// Print sites to be checked
+	printq("Checking sites: %s\n", strings.Join(sites, ", "))
+
 	var passed, failed []string
 
-	if parallel == 1 {
-		// Sequential execution (original behavior)
+	if parallel == 1 || verbose {
+		// Sequential execution (required for verbose to show commands in real-time)
 		for _, site := range sites {
+			if ctx.Err() != nil {
+				break
+			}
 			if checkSite(site, dbDir, nil) {
 				passed = append(passed, site)
 			} else {
@@ -124,7 +172,7 @@ func main() {
 		// Parallel execution
 		results := runParallelChecks(sites, dbDir, parallel)
 		for _, r := range results {
-			fmt.Print(r.output)
+			printq("%s", r.output)
 			if r.passed {
 				passed = append(passed, r.site)
 			} else {
@@ -139,13 +187,23 @@ func main() {
 		sendMail(msg, mail)
 	}
 
-	fmt.Print(msg)
+	printq("%s", msg)
+
+	// Exit with code 1 if any checks failed
+	if len(failed) > 0 {
+		os.Exit(1)
+	}
 }
 
 // runParallelChecks runs checks on multiple sites concurrently
 func runParallelChecks(sites []string, dbDir string, maxParallel int) []checkResult {
 	var wg sync.WaitGroup
 	results := make([]checkResult, len(sites))
+	total := len(sites)
+
+	// Progress tracking
+	var progressMu sync.Mutex
+	completed := 0
 
 	// Create semaphore for limiting concurrency
 	var sem chan struct{}
@@ -173,6 +231,16 @@ func runParallelChecks(sites []string, dbDir string, maxParallel int) []checkRes
 				passed: passed,
 				output: buf.String(),
 			}
+
+			// Update progress
+			progressMu.Lock()
+			completed++
+			status := "PASS"
+			if !passed {
+				status = "FAIL"
+			}
+			printq("\r[%d/%d] %s: %s\033[K\n", completed, total, s, status)
+			progressMu.Unlock()
 		}(i, site)
 	}
 
@@ -254,9 +322,15 @@ func getUpdateCommands(config Config) []string {
 	}
 }
 
-// runRemote executes a command and returns success/failure
+// runRemote executes a command and returns the exit code
 // If out is nil, output goes to stdout/stderr; otherwise it's captured
-func runRemote(cmdLine string, ignoreErrors bool, out *bytes.Buffer) bool {
+// Returns 0 on success, or the exit code on failure
+func runRemote(cmdLine string, out *bytes.Buffer) int {
+	// Log command with timestamp
+	if logFile != nil {
+		fmt.Fprintf(logFile, "[%s] %s\n", time.Now().Format(time.RFC3339), cmdLine)
+	}
+
 	if verbose {
 		if out != nil {
 			fmt.Fprintln(out, cmdLine)
@@ -265,74 +339,117 @@ func runRemote(cmdLine string, ignoreErrors bool, out *bytes.Buffer) bool {
 		}
 	}
 
-	cmd := exec.Command("/bin/sh", "-c", cmdLine)
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", cmdLine)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		// Kill the entire process group to ensure child processes (ssh) are terminated
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+
+	// Capture output for logging
+	var logBuf bytes.Buffer
 	if out != nil {
-		cmd.Stdout = out
-		cmd.Stderr = out
+		if logFile != nil {
+			cmd.Stdout = io.MultiWriter(out, &logBuf)
+			cmd.Stderr = io.MultiWriter(out, &logBuf)
+		} else {
+			cmd.Stdout = out
+			cmd.Stderr = out
+		}
 	} else {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		if logFile != nil {
+			cmd.Stdout = io.MultiWriter(os.Stdout, &logBuf)
+			cmd.Stderr = io.MultiWriter(os.Stderr, &logBuf)
+		} else {
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+		}
 	}
 
 	err := cmd.Run()
-	if err != nil && !ignoreErrors {
-		errMsg := fmt.Sprintf("%s: failed %v\n", cmdLine, err)
-		if out != nil {
-			fmt.Fprint(out, errMsg)
+	exitCode := 0
+	if err != nil {
+		if ctx.Err() != nil {
+			// Context was cancelled (Ctrl+C)
+			exitCode = -2
+		} else if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
 		} else {
-			fmt.Fprint(os.Stderr, errMsg)
+			exitCode = -1
 		}
-		return false
 	}
 
-	return true
+	// Write captured output to log file
+	if logFile != nil && logBuf.Len() > 0 {
+		logFile.Write(logBuf.Bytes())
+	}
+
+	// Log exit code if non-zero
+	if logFile != nil && exitCode != 0 {
+		fmt.Fprintf(logFile, "[%s] Exit code: %d\n", time.Now().Format(time.RFC3339), exitCode)
+	}
+
+	return exitCode
 }
 
-// checkSite runs AIDE check on a site with retry logic
-// If out is nil, output goes to stdout; otherwise it's captured
+const (
+	maxSSHRetries  = 3
+	sshFailureCode = 255
+)
+
+// checkSite runs AIDE check on a site with retry on SSH connection failures
+// If out is nil, output goes to stdout so it is displayed immediately; otherwise it's captured
 func checkSite(site, dbDir string, out *bytes.Buffer) bool {
-	for retry := 0; retry < nRetry; retry++ {
-		header := fmt.Sprintf("################################## Checking %s\n", site)
-		footer := fmt.Sprintf("################################## Finished %s\n", site)
+	header := fmt.Sprintf("################################## Checking %s\n", site)
+	footer := fmt.Sprintf("################################## Finished %s\n", site)
 
+	if out != nil {
+		fprintq(out, "%s", header)
+	} else {
+		printq("%s", header)
+	}
+
+	config := getConfig(site, dbDir)
+	sshCmd := buildSSHCommand(site, config.Check)
+
+	var exitCode int
+	for retry := 0; retry < maxSSHRetries; retry++ {
+		// Check if context was cancelled before attempting
+		if ctx.Err() != nil {
+			exitCode = -2
+			break
+		}
+		exitCode = runRemote(sshCmd, out)
+		if exitCode != sshFailureCode {
+			break
+		}
+		// SSH connection failed, print retry message
 		if out != nil {
-			fmt.Fprint(out, header)
+			fprintq(out, "SSH connection failed, retrying (%d/%d)...\n", retry+1, maxSSHRetries)
 		} else {
-			fmt.Print(header)
-		}
-
-		result := doCheck(site, dbDir, out)
-
-		if out != nil {
-			fmt.Fprint(out, footer)
-		} else {
-			fmt.Print(footer)
-		}
-
-		if result {
-			return true
-		}
-
-		// Sleep random time before retry (up to 60 seconds)
-		if retry < nRetry-1 {
-			sleepTime := time.Duration(rand.Float64()*60) * time.Second
-			time.Sleep(sleepTime)
+			printq("SSH connection failed, retrying (%d/%d)...\n", retry+1, maxSSHRetries)
 		}
 	}
 
-	return false
-}
+	if exitCode != 0 {
+		if out != nil {
+			fprintq(out, "%s: failed exit status %d\n", sshCmd, exitCode)
+		} else {
+			fprintq(os.Stderr, "%s: failed exit status %d\n", sshCmd, exitCode)
+		}
+	}
 
-// doCheck performs the actual AIDE check
-func doCheck(site, dbDir string, out *bytes.Buffer) bool {
-	config := getConfig(site, dbDir)
+	if out != nil {
+		fprintq(out, "%s", footer)
+	} else {
+		printq("%s", footer)
+	}
 
-	sshCmd := buildSSHCommand(site, config.Check)
-	return runRemote(sshCmd, false, out)
+	return exitCode == 0
 }
 
 // updateSite updates the AIDE database on a site
-func updateSite(site, dbDir, who string) error {
+func updateSite(site, dbDir string) error {
 	config := getConfig(site, dbDir)
 	updateCmds := getUpdateCommands(config)
 
@@ -367,8 +484,8 @@ func updateSite(site, dbDir, who string) error {
 		}
 
 		sshCmd := buildSSHCommand(site, cmd)
-		if !runRemote(sshCmd, true, nil) {
-			return fmt.Errorf("command failed")
+		if exitCode := runRemote(sshCmd, nil); exitCode != 0 {
+			return fmt.Errorf("command failed with exit status %d", exitCode)
 		}
 	}
 

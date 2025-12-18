@@ -47,7 +47,54 @@ Checks all sites listed in the /opt/checker/db directory
 
 ## Building from Source
 
+### Prerequisites
+
+- Go 1.21 or later installed ([download](https://go.dev/dl/))
+
+### Build Steps
+
+1. Clone the repository:
+   ```bash
+   git clone <repository-url>
+   cd <repository-directory>
+   ```
+
+2. Download dependencies:
+   ```bash
+   go mod download
+   ```
+
+3. Build the binary:
+   ```bash
+   go build -o aided .
+   ```
+
+4. (Optional) Install to your PATH:
+   ```bash
+   go install .
+   ```
+
+### Cross-Compilation
+
+Build for different platforms:
+
 ```bash
-go build -o aided .
+# Linux (amd64)
+GOOS=linux GOARCH=amd64 go build -o aided-linux-amd64 .
+
+# Linux (arm64)
+GOOS=linux GOARCH=arm64 go build -o aided-linux-arm64 .
+
+# macOS (amd64)
+GOOS=darwin GOARCH=amd64 go build -o aided-darwin-amd64 .
+
+# macOS (arm64/Apple Silicon)
+GOOS=darwin GOARCH=arm64 go build -o aided-darwin-arm64 .
+```
+
+### Verify the Build
+
+```bash
+./aided --help
 ```
 
