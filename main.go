@@ -65,7 +65,7 @@ func main() {
 	flag.StringVar(&update, "update", "", "site to update")
 	flag.StringVar(&mail, "mail", "", "email address for notifications")
 	flag.BoolVar(&verbose, "verbose", false, "enable verbose output")
-	flag.IntVar(&parallel, "parallel", 1, "number of parallel checks (0 = unlimited)")
+	flag.IntVar(&parallel, "parallel", 0, "max parallel checks (0 = unlimited, 1 = sequential)")
 	flag.Parse()
 
 	// Update SSH options for verbose mode
