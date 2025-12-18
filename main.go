@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -33,11 +35,19 @@ type Config struct {
 	Check  string      `json:"check"`
 }
 
+// checkResult holds the result of a site check
+type checkResult struct {
+	site   string
+	passed bool
+	output string
+}
+
 func main() {
 	// Parse command-line arguments
 	var dbDir string
 	var update string
 	var mail string
+	var parallel int
 
 	// Get default dbDir relative to executable
 	exePath, err := os.Executable()
@@ -55,6 +65,7 @@ func main() {
 	flag.StringVar(&update, "update", "", "site to update")
 	flag.StringVar(&mail, "mail", "", "email address for notifications")
 	flag.BoolVar(&verbose, "verbose", false, "enable verbose output")
+	flag.IntVar(&parallel, "parallel", 1, "number of parallel checks (0 = unlimited)")
 	flag.Parse()
 
 	// Update SSH options for verbose mode
@@ -100,11 +111,25 @@ func main() {
 
 	var passed, failed []string
 
-	for _, site := range sites {
-		if checkSite(site, dbDir) {
-			passed = append(passed, site)
-		} else {
-			failed = append(failed, site)
+	if parallel == 1 {
+		// Sequential execution (original behavior)
+		for _, site := range sites {
+			if checkSite(site, dbDir, nil) {
+				passed = append(passed, site)
+			} else {
+				failed = append(failed, site)
+			}
+		}
+	} else {
+		// Parallel execution
+		results := runParallelChecks(sites, dbDir, parallel)
+		for _, r := range results {
+			fmt.Print(r.output)
+			if r.passed {
+				passed = append(passed, r.site)
+			} else {
+				failed = append(failed, r.site)
+			}
 		}
 	}
 
@@ -115,6 +140,44 @@ func main() {
 	}
 
 	fmt.Print(msg)
+}
+
+// runParallelChecks runs checks on multiple sites concurrently
+func runParallelChecks(sites []string, dbDir string, maxParallel int) []checkResult {
+	var wg sync.WaitGroup
+	results := make([]checkResult, len(sites))
+
+	// Create semaphore for limiting concurrency
+	var sem chan struct{}
+	if maxParallel > 0 {
+		sem = make(chan struct{}, maxParallel)
+	}
+
+	for i, site := range sites {
+		wg.Add(1)
+		go func(idx int, s string) {
+			defer wg.Done()
+
+			// Acquire semaphore if limited
+			if sem != nil {
+				sem <- struct{}{}
+				defer func() { <-sem }()
+			}
+
+			// Capture output for this site
+			var buf bytes.Buffer
+			passed := checkSite(s, dbDir, &buf)
+
+			results[idx] = checkResult{
+				site:   s,
+				passed: passed,
+				output: buf.String(),
+			}
+		}(i, site)
+	}
+
+	wg.Wait()
+	return results
 }
 
 // getSites returns a sorted list of site directories in dbDir
@@ -192,18 +255,33 @@ func getUpdateCommands(config Config) []string {
 }
 
 // runRemote executes a command and returns success/failure
-func runRemote(cmdLine string, ignoreErrors bool) bool {
+// If out is nil, output goes to stdout/stderr; otherwise it's captured
+func runRemote(cmdLine string, ignoreErrors bool, out *bytes.Buffer) bool {
 	if verbose {
-		fmt.Println(cmdLine)
+		if out != nil {
+			fmt.Fprintln(out, cmdLine)
+		} else {
+			fmt.Println(cmdLine)
+		}
 	}
 
 	cmd := exec.Command("/bin/sh", "-c", cmdLine)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	if out != nil {
+		cmd.Stdout = out
+		cmd.Stderr = out
+	} else {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	}
 
 	err := cmd.Run()
 	if err != nil && !ignoreErrors {
-		fmt.Fprintf(os.Stderr, "%s: failed %v\n", cmdLine, err)
+		errMsg := fmt.Sprintf("%s: failed %v\n", cmdLine, err)
+		if out != nil {
+			fmt.Fprint(out, errMsg)
+		} else {
+			fmt.Fprint(os.Stderr, errMsg)
+		}
 		return false
 	}
 
@@ -211,13 +289,25 @@ func runRemote(cmdLine string, ignoreErrors bool) bool {
 }
 
 // checkSite runs AIDE check on a site with retry logic
-func checkSite(site, dbDir string) bool {
+// If out is nil, output goes to stdout; otherwise it's captured
+func checkSite(site, dbDir string, out *bytes.Buffer) bool {
 	for retry := 0; retry < nRetry; retry++ {
-		fmt.Printf("################################## Checking %s\n", site)
+		header := fmt.Sprintf("################################## Checking %s\n", site)
+		footer := fmt.Sprintf("################################## Finished %s\n", site)
 
-		result := doCheck(site, dbDir)
+		if out != nil {
+			fmt.Fprint(out, header)
+		} else {
+			fmt.Print(header)
+		}
 
-		fmt.Printf("################################## Finished %s\n", site)
+		result := doCheck(site, dbDir, out)
+
+		if out != nil {
+			fmt.Fprint(out, footer)
+		} else {
+			fmt.Print(footer)
+		}
 
 		if result {
 			return true
@@ -234,11 +324,11 @@ func checkSite(site, dbDir string) bool {
 }
 
 // doCheck performs the actual AIDE check
-func doCheck(site, dbDir string) bool {
+func doCheck(site, dbDir string, out *bytes.Buffer) bool {
 	config := getConfig(site, dbDir)
 
 	sshCmd := buildSSHCommand(site, config.Check)
-	return runRemote(sshCmd, false)
+	return runRemote(sshCmd, false, out)
 }
 
 // updateSite updates the AIDE database on a site
@@ -277,7 +367,7 @@ func updateSite(site, dbDir, who string) error {
 		}
 
 		sshCmd := buildSSHCommand(site, cmd)
-		if !runRemote(sshCmd, true) {
+		if !runRemote(sshCmd, true, nil) {
 			return fmt.Errorf("command failed")
 		}
 	}
