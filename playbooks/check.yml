@@ -1,0 +1,75 @@
+---
+# AIDE Check Playbook
+# Runs AIDE integrity checks on remote systems
+#
+# Usage:
+#   ansible-playbook -i inventory check.yml
+#   ansible-playbook -i inventory check.yml -e "dbdir=/path/to/db"
+#
+
+- name: Run AIDE integrity checks
+  hosts: aide_hosts
+  gather_facts: false
+  vars:
+    dbdir: "{{ lookup('env', 'DBDIR') | default('./db', true) }}"
+    aide_exe: "/usr/sbin/aide"
+    default_check_cmd: "sudo {{ aide_exe }} --check"
+
+  tasks:
+    - name: Load site-specific configuration
+      delegate_to: localhost
+      block:
+        - name: Check if config file exists
+          stat:
+            path: "{{ dbdir }}/{{ inventory_hostname }}/config.json"
+          register: config_file
+
+        - name: Load site config
+          set_fact:
+            site_config: "{{ lookup('file', dbdir + '/' + inventory_hostname + '/config.json') | from_json }}"
+          when: config_file.stat.exists
+
+        - name: Set default config
+          set_fact:
+            site_config: {}
+          when: not config_file.stat.exists
+
+    - name: Determine check command
+      set_fact:
+        check_cmd: "{{ site_config.check | default(default_check_cmd) }}"
+
+    - name: Display check starting
+      debug:
+        msg: "################################## Checking {{ inventory_hostname }}"
+
+    - name: Run AIDE check
+      shell: "{{ check_cmd }}"
+      register: aide_result
+      ignore_errors: true
+      retries: 3
+      delay: "{{ 60 | random }}"
+      until: aide_result.rc == 0
+
+    - name: Display AIDE output
+      debug:
+        msg: "{{ aide_result.stdout_lines | default([]) }}"
+      when: aide_result.stdout_lines is defined and aide_result.stdout_lines | length > 0
+
+    - name: Display AIDE errors
+      debug:
+        msg: "{{ aide_result.stderr_lines | default([]) }}"
+      when: aide_result.stderr_lines is defined and aide_result.stderr_lines | length > 0
+
+    - name: Display check finished
+      debug:
+        msg: "################################## Finished {{ inventory_hostname }} {% if aide_result.rc != 0 %}(FAILED){% endif %}"
+
+    - name: Record check result
+      set_fact:
+        check_passed: "{{ aide_result.rc == 0 }}"
+
+    - name: Fail if check failed (for reporting)
+      fail:
+        msg: "AIDE check failed for {{ inventory_hostname }}"
+      when: aide_result.rc != 0
+      ignore_errors: true

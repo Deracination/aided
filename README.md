@@ -8,42 +8,227 @@ intruder discovering a cron job running AIDE may be able to defeat the system ch
 It's a little harder to defeat AIDE when the executable and the comparison database are copied onto the system before running. This
 script provides a reasonably simple way to automate this process for any number of servers.
 
-## Details
+## Implementations
 
-The *checker* script by default copies the aide db and executable to each server listed in the db directory, runs AIDE
-and reports any detected problems.
+This project provides two implementations:
 
-This requires an ssh login to each server which can run sudo (via ssh).
+1. **`checker`** - Original Perl implementation (requires Perl v5.20+)
+2. **`checker.sh`** - Bash/Ansible reimplementation (requires Bash 4+ and optionally Ansible)
 
-The AIDE executable, database, and configuration are stored on the local system (where checker is run)
-and copied to the remote server where AIDE is run (via ssh sudo).
+Both implementations share the same configuration files in the `db/` directory.
 
-## Usage
-Check (runs AIDE check) all servers listed in the ~/db directory
+---
 
-    checker
+## Bash/Ansible Implementation (`checker.sh`)
 
-Checks all servers listed in the ~/db directory and sends email to *person@somewhere.com* if any checks fail.
+### Usage
 
-    checker --mail=person@somewhere.com
+Check all servers listed in the `db/` directory:
+```bash
+./checker.sh
+```
 
-Checks just the *site1* servers which must be present in the ~/db directory
+Check specific sites:
+```bash
+./checker.sh site1 site2
+```
 
-    checker --check site1
+Check all servers and email results:
+```bash
+./checker.sh --mail=person@somewhere.com
+```
 
-Updates the stored database for *new_site*. Use this to update aide if you make some file changes on *new_site* (like installing updates with yum, etc). If you don't have an existing configuration for *new_site* it will be created and added to ~/db.
+Update the AIDE database for a site:
+```bash
+./checker.sh --update=mysite
+```
 
-    checker --update new_site
+Use a custom database directory:
+```bash
+./checker.sh --db=/opt/checker/db
+```
 
-Checks all sites listed in the /opt/checker/db directory
+Enable verbose output:
+```bash
+./checker.sh --verbose
+```
 
-    checker --db=/opt/checker/db
-## Options
-* --mail=address : if set the result of running a check is emailed to this address.
-* --who=username : set the username who is ssh'd into the remote systems (defaults to user running checker). The user will be set as owner of copies files which will be scp'd back to the local system (aide.db.gz, aide executable). The user is only required for --update and --fetch. Not required for running checks of systems.
+### Options
 
-## Requires
-*   Perl v5.20+ on checker system (locally)
-*   AIDE installed on remote systems
-*   SSH login from local system which can run sudo on the remote systems.
+| Option | Description |
+|--------|-------------|
+| `--db=DIR` | Override database directory (default: `./db`) |
+| `--update=NAME` | Update AIDE database for specified site |
+| `--mail=ADDRESS` | Email results to this address |
+| `--who=USERNAME` | SSH username (default: current user) |
+| `--verbose` | Enable verbose output |
+| `-h, --help` | Show help message |
 
+### Requirements
+
+- Bash 4.0+
+- `jq` (for JSON parsing)
+- SSH access to remote systems
+- `sudo` privileges on remote systems
+- AIDE installed on remote systems
+- (Optional) Ansible 2.9+ for playbook-based checks
+
+### Using Ansible Playbooks Directly
+
+You can also use the Ansible playbooks directly for more control:
+
+**Run checks on specific hosts:**
+```bash
+ansible-playbook -i inventory.ini playbooks/check.yml
+```
+
+**Update AIDE database:**
+```bash
+ansible-playbook -i inventory.ini playbooks/update.yml \
+    -e "target_host=mysite" \
+    -e "sudo_password=secret"
+```
+
+**Example inventory file (`inventory.ini`):**
+```ini
+[aide_hosts]
+webserver1 ansible_host=192.168.1.10 ansible_user=admin
+webserver2 ansible_host=192.168.1.11 ansible_user=admin
+dbserver ansible_host=192.168.1.20 ansible_user=dbadmin
+```
+
+---
+
+## Original Perl Implementation (`checker`)
+
+### Usage
+
+Check all servers listed in the `db/` directory:
+```bash
+./checker
+```
+
+Check all servers and send email if any checks fail:
+```bash
+./checker --mail=person@somewhere.com
+```
+
+Check specific sites:
+```bash
+./checker site1 site2
+```
+
+Update the stored database for a site:
+```bash
+./checker --update=new_site --who=username
+```
+
+Use a custom database directory:
+```bash
+./checker --db=/opt/checker/db
+```
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--db=DIR` | Override database directory |
+| `--update=NAME` | Update AIDE database for specified site |
+| `--mail=ADDRESS` | Email check results to this address |
+| `--who=USERNAME` | SSH username for remote systems |
+| `--verbose` | Enable verbose SSH/SCP output |
+
+### Requirements
+
+- Perl v5.20+ on the local system
+- AIDE installed on remote systems
+- SSH login from local system with sudo privileges on remote systems
+
+---
+
+## Site Configuration
+
+Site configurations are stored in `db/<sitename>/config.json`. This allows customization per site to support different Linux distributions (Ubuntu, AlmaLinux, etc.) which may have AIDE installed in different locations.
+
+### Example Configuration
+
+```json
+{
+    "check": "sudo /usr/sbin/aide --check",
+    "update": [
+        "sudo /usr/sbin/aide --update",
+        "echo {SUDO_PW}|sudo -S mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
+    ],
+    "host": "192.168.1.10",
+    "user": "admin"
+}
+```
+
+### Configuration Options
+
+| Option | Description |
+|--------|-------------|
+| `check` | Command to run AIDE check (default: `sudo /usr/sbin/aide --check`) |
+| `update` | Command(s) to update AIDE database (can be string or array) |
+| `host` | Custom hostname/IP for SSH connection |
+| `user` | Custom SSH username for this site |
+
+### Default Paths
+
+- AIDE executable: `/usr/sbin/aide`
+- AIDE home/database: `/var/lib/aide`
+- AIDE database file: `aide.db.gz`
+
+---
+
+## Directory Structure
+
+```
+aided/
+├── checker           # Original Perl implementation
+├── checker.sh        # Bash/Ansible reimplementation
+├── ansible.cfg       # Ansible configuration
+├── playbooks/
+│   ├── check.yml     # AIDE check playbook
+│   └── update.yml    # AIDE update playbook
+├── db/               # Site configurations and data
+│   ├── site1/
+│   │   └── config.json
+│   ├── site2/
+│   │   └── config.json
+│   └── ...
+└── README.md
+```
+
+---
+
+## How It Works
+
+1. The checker reads site configurations from the `db/` directory
+2. For each site, it establishes an SSH connection
+3. AIDE is executed via `sudo` to check file integrity
+4. Results are collected and reported
+5. Optionally, results are emailed to administrators
+
+### Security Model
+
+- AIDE database and configuration are stored on the checking system (not on monitored servers)
+- SSH connections use strict host key checking disabled for automation
+- Sudo passwords can be provided interactively for update operations
+- Retry logic handles transient network failures
+
+---
+
+## Cron Example
+
+Run daily AIDE checks and email results:
+
+```cron
+0 3 * * * /path/to/aided/checker.sh --mail=security@example.com 2>&1 | logger -t aide-checker
+```
+
+Or using the Perl version:
+
+```cron
+0 3 * * * /path/to/aided/checker --mail=security@example.com 2>&1 | logger -t aide-checker
+```

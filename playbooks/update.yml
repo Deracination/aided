@@ -1,0 +1,69 @@
+---
+# AIDE Update Playbook
+# Updates AIDE database on remote systems
+#
+# Usage:
+#   ansible-playbook -i inventory update.yml -e "target_host=mysite"
+#   ansible-playbook -i inventory update.yml -e "target_host=mysite sudo_password=secret"
+#
+
+- name: Update AIDE database
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  vars:
+    dbdir: "{{ lookup('env', 'DBDIR') | default('./db', true) }}"
+    aide_exe: "/usr/sbin/aide"
+    aide_home: "/var/lib/aide"
+    sudo_password: ""
+    default_update_cmds:
+      - "sudo {{ aide_exe }} --update"
+      - "echo {{ sudo_password }}|sudo -S mv {{ aide_home }}/aide.db.new.gz {{ aide_home }}/aide.db.gz"
+
+  tasks:
+    - name: Load site-specific configuration
+      delegate_to: localhost
+      block:
+        - name: Check if config file exists
+          stat:
+            path: "{{ dbdir }}/{{ inventory_hostname }}/config.json"
+          register: config_file
+
+        - name: Load site config
+          set_fact:
+            site_config: "{{ lookup('file', dbdir + '/' + inventory_hostname + '/config.json') | from_json }}"
+          when: config_file.stat.exists
+
+        - name: Set default config
+          set_fact:
+            site_config: {}
+          when: not config_file.stat.exists
+
+    - name: Determine update commands
+      set_fact:
+        update_cmds: "{{ site_config.update | default(default_update_cmds) }}"
+
+    - name: Convert single command to list if needed
+      set_fact:
+        update_cmds: "{{ [update_cmds] if update_cmds is string else update_cmds }}"
+
+    - name: Display update starting
+      debug:
+        msg: "Updating {{ inventory_hostname }}"
+
+    - name: Run AIDE update commands
+      shell: "{{ item | regex_replace('\\{SUDO_PW\\}', sudo_password) }}"
+      loop: "{{ update_cmds }}"
+      register: update_result
+      ignore_errors: true
+      no_log: true  # Hide sudo password from logs
+
+    - name: Display update results
+      debug:
+        msg: "Update command {{ idx + 1 }} completed with rc={{ item.rc }}"
+      loop: "{{ update_result.results }}"
+      loop_control:
+        index_var: idx
+
+    - name: Display update finished
+      debug:
+        msg: "Update completed for {{ inventory_hostname }}"
