@@ -1,8 +1,14 @@
 # Quiddler Multiplayer Web App - Implementation Plan
 
+## Based on The Deck Framework
+
+This implementation will use [The Deck](https://github.com/xajik/thedeck) as the foundation - an open-source Flutter-based multiplayer card game platform.
+
+---
+
 ## 1. Project Overview
 
-Reimplementation of the Quiddler card game as a real-time multiplayer web application. Quiddler is a word-building card game where players form words from letter cards across 8 rounds of increasing hand sizes (3-10 cards).
+Reimplementation of the Quiddler card game as a real-time multiplayer application using The Deck framework. Quiddler is a word-building card game where players form words from letter cards across 8 rounds of increasing hand sizes (3-10 cards).
 
 ### Core Game Mechanics to Implement
 - **Deck**: 118 cards with letters A-Z plus special double-letter cards (QU, IN, ER, TH, CL)
@@ -15,239 +21,468 @@ Reimplementation of the Quiddler card game as a real-time multiplayer web applic
 
 ---
 
-## 2. Technology Stack
+## 2. The Deck Framework Overview
 
-### Frontend
-| Component | Technology | Rationale |
-|-----------|------------|-----------|
-| Framework | **React 18+** with TypeScript | Component-based, excellent ecosystem, type safety |
-| State Management | **Zustand** or **Redux Toolkit** | Lightweight, handles complex game state |
-| Styling | **Tailwind CSS** | Rapid UI development, responsive design |
-| Real-time | **Socket.IO Client** | Robust WebSocket abstraction |
-| Animations | **Framer Motion** | Smooth card animations, drag-and-drop |
-| Build Tool | **Vite** | Fast development, optimized builds |
+### Why The Deck?
+The Deck provides a complete multiplayer card game infrastructure:
+- ✅ Real-time multiplayer via Socket.IO
+- ✅ Game room management (create/join/leave)
+- ✅ Redux-based state management
+- ✅ Cross-platform (iOS, Android, Web via Flutter)
+- ✅ Extensible game architecture with abstract base classes
+- ✅ Local persistence with ObjectBox
+- ✅ User profiles and session management
 
-### Backend
-| Component | Technology | Rationale |
-|-----------|------------|-----------|
-| Runtime | **Node.js** with TypeScript | Same language as frontend, async performance |
-| Framework | **Express** or **Fastify** | Lightweight HTTP server |
-| Real-time | **Socket.IO** | Rooms, namespaces, reconnection handling |
-| Database | **PostgreSQL** | Relational data, user accounts, game history |
-| ORM | **Prisma** | Type-safe queries, migrations |
-| Cache | **Redis** | Session storage, game state cache, pub/sub |
-| Auth | **Passport.js** + JWT | Flexible authentication strategies |
-
-### Infrastructure
-| Component | Technology | Rationale |
-|-----------|------------|-----------|
-| Hosting | **Railway** / **Render** / **Fly.io** | Easy deployment, WebSocket support |
-| Database Hosting | **Supabase** or managed PostgreSQL | Managed, scalable |
-| CDN | **Cloudflare** | Static assets, DDoS protection |
-
----
-
-## 3. Architecture
+### The Deck Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        FRONTEND (React)                         │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────┐ │
-│  │  Lobby   │  │Game Room │  │ Game UI  │  │ Card Components  │ │
-│  │  System  │  │  Manager │  │  Board   │  │  Hand, Discard   │ │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────────────┘ │
-│                         ▼                                        │
-│  ┌──────────────────────────────────────────────────────────────┐│
-│  │              Socket.IO Client + Zustand Store                 ││
-│  └──────────────────────────────────────────────────────────────┘│
-└───────────────────────────────┬─────────────────────────────────┘
-                                │ WebSocket + REST
-┌───────────────────────────────▼─────────────────────────────────┐
-│                        BACKEND (Node.js)                         │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────┐ │
-│  │   Auth   │  │  Lobby   │  │   Game   │  │   Dictionary     │ │
-│  │  Service │  │  Service │  │  Engine  │  │    Validator     │ │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────────────┘ │
-│                         ▼                                        │
-│  ┌────────────────┐  ┌────────────────┐  ┌─────────────────────┐│
-│  │   PostgreSQL   │  │     Redis      │  │  Socket.IO Server  ││
-│  │  (persistent)  │  │ (game state)   │  │     (rooms)        ││
-│  └────────────────┘  └────────────────┘  └─────────────────────┘│
+│                    THE DECK FRAMEWORK                            │
+├─────────────────────────────────────────────────────────────────┤
+│  thedeck_client          │  Flutter UI, Redux stores, screens   │
+│  thedeck_server          │  Game logic, socket handlers         │
+│  thedeck_common          │  Shared models, utilities            │
+│  thedeck_server_app      │  Server application wrapper          │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    CORE ABSTRACTIONS                             │
+├─────────────────────────────────────────────────────────────────┤
+│  GameRoom                │  roomId, participants, board, details│
+│  GameBoard               │  moves, gameField, players           │
+│  GameMove (abstract)     │  Base class for game actions         │
+│  GameField (abstract)    │  Base class for game state           │
+│  Player (abstract)       │  Base class for player state         │
+│  GameParticipant         │  userId, sessionId, isHost, profile  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
----
-
-## 4. Data Models
-
-### Database Schema (PostgreSQL)
-
-```typescript
-// User
-model User {
-  id            String   @id @default(uuid())
-  email         String   @unique
-  username      String   @unique
-  passwordHash  String
-  avatar        String?
-  gamesPlayed   Int      @default(0)
-  gamesWon      Int      @default(0)
-  totalScore    Int      @default(0)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-}
-
-// GameRecord (completed games for history)
-model GameRecord {
-  id          String   @id @default(uuid())
-  players     Json     // [{userId, finalScore, placement}]
-  rounds      Int      // number of rounds played
-  winnerId    String
-  playedAt    DateTime @default(now())
-}
+### Game Flow in The Deck
 ```
-
-### In-Memory Game State (Redis/Memory)
-
-```typescript
-interface GameState {
-  id: string;
-  status: 'waiting' | 'in_progress' | 'finished';
-  currentRound: number;        // 1-8
-  currentPlayerIndex: number;
-  turnPhase: 'draw' | 'play' | 'discard';
-
-  players: Player[];
-  deck: Card[];
-  discardPile: Card[];
-
-  roundGoingOut: boolean;      // someone went out
-  goingOutPlayerIndex: number | null;
-  lastTurnPlayers: Set<string>; // players who get final turn
-
-  roundScores: RoundScore[][];  // per round, per player
-}
-
-interface Player {
-  id: string;
-  username: string;
-  hand: Card[];
-  laidDownWords: Card[][];     // words formed when going out
-  totalScore: number;
-  connected: boolean;
-}
-
-interface Card {
-  id: string;
-  letters: string;      // 'A', 'QU', 'TH', etc.
-  points: number;
-}
+Client A                    Server                    Client B
+    │                          │                          │
+    │──── Make Move ──────────▶│                          │
+    │                          │── Validate & Apply ──────│
+    │                          │── Update GameField ──────│
+    │◀── Broadcast State ──────│────── Broadcast State ──▶│
+    │                          │                          │
 ```
 
 ---
 
-## 5. Core Features & Implementation Phases
+## 3. Technology Stack
 
-### Phase 1: Foundation (Week 1-2)
-- [ ] Project scaffolding (monorepo with Turborepo or separate repos)
-- [ ] Basic Express/Fastify server with Socket.IO
-- [ ] React app with routing (React Router)
-- [ ] User authentication (register, login, JWT)
-- [ ] Basic UI layout and styling
-- [ ] Card component with point values
+### Inherited from The Deck
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| Language | **Dart** | Primary development language |
+| Framework | **Flutter** | Cross-platform UI (iOS, Android, Web) |
+| State Management | **Redux** | Centralized, predictable state |
+| Real-time | **Socket.IO** | Multiplayer communication |
+| Local Storage | **ObjectBox** | User data, offline support |
+| Architecture | **Clean Architecture** | Separation of concerns |
 
-### Phase 2: Game Engine (Week 2-3)
-- [ ] Card deck generation with correct distribution
-- [ ] Game state machine (waiting → playing → finished)
-- [ ] Turn logic (draw, form words, discard)
-- [ ] Round progression (deal increasing cards)
-- [ ] Going out detection
-- [ ] Dictionary integration for word validation
-- [ ] Scoring calculation with bonuses
+### Quiddler-Specific Additions
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| Dictionary | **SOWPODS/TWL word list** | Word validation (bundled asset) |
+| Word Lookup | **Trie data structure** | O(m) word validation |
+| Letter Assets | **Custom SVG/PNG cards** | Quiddler-themed card designs |
 
-### Phase 3: Multiplayer (Week 3-4)
-- [ ] Lobby system (create/join rooms)
-- [ ] Real-time game state synchronization
-- [ ] Player turn management
-- [ ] Reconnection handling
-- [ ] Spectator mode (optional)
-- [ ] Game invites via link
-
-### Phase 4: Game UI (Week 4-5)
-- [ ] Interactive hand display with drag-and-drop
-- [ ] Word building area
-- [ ] Discard pile and draw deck visualization
-- [ ] Player status indicators
-- [ ] Score board (current round + total)
-- [ ] Round/game end summaries
-- [ ] Card animations (deal, draw, discard)
-
-### Phase 5: Polish & Deploy (Week 5-6)
-- [ ] Challenge system for disputed words
-- [ ] Sound effects (optional)
-- [ ] Mobile responsiveness
-- [ ] Error handling and edge cases
-- [ ] Performance optimization
-- [ ] Deployment and CI/CD
-- [ ] Basic analytics/monitoring
+### Target Platforms
+- **Primary**: Web (Flutter Web)
+- **Secondary**: iOS, Android (Flutter mobile)
+- **Server**: Dart server (thedeck_server_app)
 
 ---
 
-## 6. Key Technical Decisions
+## 4. Implementation Strategy
 
-### Dictionary/Word Validation
-**Recommendation: Use a pre-compiled word list**
+### Approach: Fork and Extend
+1. **Fork** The Deck repository
+2. **Add** Quiddler as a new game type within the framework
+3. **Implement** Quiddler-specific classes extending The Deck's abstractions
+4. **Integrate** dictionary-based word validation
+5. **Deploy** as web app with optional mobile builds
 
-Options:
-1. **SOWPODS / TWL** (Scrabble dictionaries) - Comprehensive, standard
-2. **Datamuse API** - Online lookup, rate-limited
-3. **Local Trie structure** - Fast in-memory lookups
+---
 
-**Implementation:**
-```typescript
-// Load dictionary into a Set for O(1) lookups
-const dictionary = new Set<string>(wordListArray);
+## 5. Quiddler-Specific Data Models
 
-function isValidWord(word: string): boolean {
-  const normalized = word.toLowerCase();
-  if (normalized.length < 2) return false;
-  return dictionary.has(normalized);
+### Extending The Deck Abstractions
+
+```dart
+/// Quiddler-specific game field extending GameField
+class QuiddlerGameField extends GameField {
+  final List<QuiddlerCard> deck;
+  final List<QuiddlerCard> discardPile;
+  final int currentRound;           // 1-8
+  final int cardsPerHand;           // 3-10 based on round
+  final bool someoneWentOut;
+  final String? goingOutPlayerId;
+  final Set<String> playersWithFinalTurn;
+
+  QuiddlerGameField({
+    required this.deck,
+    required this.discardPile,
+    required this.currentRound,
+    required this.cardsPerHand,
+    this.someoneWentOut = false,
+    this.goingOutPlayerId,
+    this.playersWithFinalTurn = const {},
+  });
+}
+
+/// Quiddler player state extending Player
+class QuiddlerPlayer extends Player {
+  final String odyserId;
+  final String odysername;
+  final List<QuiddlerCard> hand;
+  final List<List<QuiddlerCard>> laidDownWords;  // Words formed when going out
+  final int roundScore;
+  final int totalScore;
+  final bool hasDrawnThisTurn;
+  final bool isConnected;
+
+  QuiddlerPlayer({
+    required this.id,
+    required this.username,
+    required this.hand,
+    this.laidDownWords = const [],
+    this.roundScore = 0,
+    this.totalScore = 0,
+    this.hasDrawnThisTurn = false,
+    this.isConnected = true,
+  });
+}
+
+/// Quiddler move types extending GameMove
+abstract class QuiddlerMove extends GameMove {
+  final String playerId;
+  final DateTime timestamp;
+}
+
+class DrawMove extends QuiddlerMove {
+  final DrawSource source;  // deck or discard
+}
+
+class FormWordsMove extends QuiddlerMove {
+  final List<List<QuiddlerCard>> words;  // Words being laid down
+}
+
+class DiscardMove extends QuiddlerMove {
+  final QuiddlerCard card;
+}
+
+class ChallengeMove extends QuiddlerMove {
+  final String challengedPlayerId;
+  final String challengedWord;
+}
+
+/// Quiddler card model
+class QuiddlerCard {
+  final String id;
+  final String letters;     // 'A', 'QU', 'TH', etc.
+  final int points;
+  final bool isDoubleLetter;
+
+  QuiddlerCard({
+    required this.id,
+    required this.letters,
+    required this.points,
+  }) : isDoubleLetter = letters.length > 1;
+}
+
+enum DrawSource { deck, discard }
+```
+
+### Round Scores Model
+
+```dart
+class RoundScore {
+  final String playerId;
+  final int wordPoints;       // Sum of card values in words
+  final int unusedPenalty;    // Negative points for unused cards
+  final int mostWordsBonus;   // +10 if applicable
+  final int longestWordBonus; // +10 if applicable
+  final int totalRoundScore;
+
+  RoundScore({
+    required this.playerId,
+    required this.wordPoints,
+    required this.unusedPenalty,
+    this.mostWordsBonus = 0,
+    this.longestWordBonus = 0,
+  }) : totalRoundScore = max(0, wordPoints - unusedPenalty + mostWordsBonus + longestWordBonus);
 }
 ```
 
-### Real-time Synchronization Strategy
-**Server-authoritative model:**
-1. Client sends actions (draw, place word, discard)
-2. Server validates and updates game state
-3. Server broadcasts new state to all players
-4. Client renders based on received state
+---
 
-**Socket Events:**
-```typescript
-// Client → Server
-'game:draw'         // { source: 'deck' | 'discard' }
-'game:form_words'   // { words: Card[][] }
-'game:discard'      // { cardId: string }
-'game:challenge'    // { playerId: string, word: string }
+## 6. Directory Structure (New Files)
 
-// Server → Client
-'game:state_update' // full or partial game state
-'game:player_turn'  // whose turn it is
-'game:round_end'    // round scores and bonuses
-'game:end'          // final scores and winner
+Additions to The Deck repository structure:
+
 ```
-
-### Turn Timer (Optional Enhancement)
-- Configurable turn time limit (e.g., 60-120 seconds)
-- Warning at 15 seconds
-- Auto-pass or auto-discard if timer expires
+thedeck/
+├── lib/
+│   ├── games/
+│   │   └── quiddler/                    # NEW: Quiddler game module
+│   │       ├── quiddler_game.dart       # Game registration
+│   │       ├── models/
+│   │       │   ├── quiddler_card.dart
+│   │       │   ├── quiddler_player.dart
+│   │       │   ├── quiddler_field.dart
+│   │       │   └── quiddler_move.dart
+│   │       ├── logic/
+│   │       │   ├── quiddler_engine.dart    # Core game rules
+│   │       │   ├── deck_generator.dart     # Card deck creation
+│   │       │   ├── scoring.dart            # Score calculation
+│   │       │   └── word_validator.dart     # Dictionary lookup
+│   │       └── ui/
+│   │           ├── quiddler_board.dart     # Main game screen
+│   │           ├── quiddler_hand.dart      # Player hand display
+│   │           ├── quiddler_card_widget.dart
+│   │           ├── word_builder.dart       # Word formation UI
+│   │           └── scoreboard.dart
+│   │
+│   └── redux/
+│       └── quiddler/                    # NEW: Quiddler Redux state
+│           ├── quiddler_state.dart
+│           ├── quiddler_actions.dart
+│           └── quiddler_reducer.dart
+│
+├── assets/
+│   └── quiddler/                        # NEW: Quiddler assets
+│       ├── cards/                       # Card images
+│       └── dictionary/
+│           └── sowpods.txt              # Word list (~267K words)
+│
+├── thedeck_server/
+│   └── lib/
+│       └── games/
+│           └── quiddler/                # NEW: Server-side game logic
+│               ├── quiddler_room.dart
+│               ├── quiddler_handler.dart
+│               └── quiddler_validator.dart
+│
+└── thedeck_common/
+    └── lib/
+        └── games/
+            └── quiddler/                # NEW: Shared Quiddler types
+                ├── quiddler_types.dart
+                └── quiddler_constants.dart
+```
 
 ---
 
-## 7. Card Distribution
+## 7. Core Implementation Components
+
+### 7.1 Game Engine (quiddler_engine.dart)
+
+```dart
+class QuiddlerEngine {
+  final WordValidator wordValidator;
+
+  /// Initialize a new game
+  QuiddlerGameField initializeGame(List<String> playerIds) {
+    final deck = DeckGenerator.createShuffledDeck();
+    final hands = _dealCards(deck, playerIds, cardsPerRound: 3);
+    // ...
+  }
+
+  /// Process a player's move
+  MoveResult processMove(QuiddlerGameField field, QuiddlerMove move) {
+    return switch (move) {
+      DrawMove m => _processDraw(field, m),
+      FormWordsMove m => _processFormWords(field, m),
+      DiscardMove m => _processDiscard(field, m),
+      ChallengeMove m => _processChallenge(field, m),
+    };
+  }
+
+  /// Check if player can go out (all cards used in valid words)
+  bool canGoOut(List<QuiddlerCard> hand, List<List<QuiddlerCard>> words) {
+    final usedCards = words.expand((w) => w).toSet();
+    return usedCards.length == hand.length &&
+           words.every((word) => wordValidator.isValid(_cardsToString(word)));
+  }
+
+  /// Calculate round scores with bonuses
+  List<RoundScore> calculateRoundScores(List<QuiddlerPlayer> players) {
+    // Find most words and longest word for bonuses
+    // Calculate scores per player
+    // ...
+  }
+}
+```
+
+### 7.2 Deck Generator (deck_generator.dart)
+
+```dart
+class DeckGenerator {
+  static const Map<String, CardData> cardDistribution = {
+    'A':  CardData(count: 10, points: 2),
+    'B':  CardData(count: 2,  points: 8),
+    'C':  CardData(count: 2,  points: 8),
+    'D':  CardData(count: 4,  points: 5),
+    'E':  CardData(count: 12, points: 2),
+    'F':  CardData(count: 2,  points: 6),
+    'G':  CardData(count: 4,  points: 6),
+    'H':  CardData(count: 2,  points: 7),
+    'I':  CardData(count: 8,  points: 2),
+    'J':  CardData(count: 2,  points: 13),
+    'K':  CardData(count: 2,  points: 8),
+    'L':  CardData(count: 4,  points: 3),
+    'M':  CardData(count: 2,  points: 5),
+    'N':  CardData(count: 6,  points: 2),
+    'O':  CardData(count: 8,  points: 2),
+    'P':  CardData(count: 2,  points: 6),
+    'Q':  CardData(count: 2,  points: 15),
+    'R':  CardData(count: 6,  points: 5),
+    'S':  CardData(count: 4,  points: 3),
+    'T':  CardData(count: 6,  points: 3),
+    'U':  CardData(count: 6,  points: 4),
+    'V':  CardData(count: 2,  points: 11),
+    'W':  CardData(count: 2,  points: 10),
+    'X':  CardData(count: 2,  points: 12),
+    'Y':  CardData(count: 4,  points: 4),
+    'Z':  CardData(count: 2,  points: 14),
+    // Double-letter cards
+    'QU': CardData(count: 2,  points: 9),
+    'IN': CardData(count: 2,  points: 7),
+    'ER': CardData(count: 2,  points: 7),
+    'TH': CardData(count: 2,  points: 9),
+    'CL': CardData(count: 2,  points: 10),
+  };
+
+  static List<QuiddlerCard> createShuffledDeck() {
+    final deck = <QuiddlerCard>[];
+    int cardId = 0;
+
+    for (final entry in cardDistribution.entries) {
+      for (int i = 0; i < entry.value.count; i++) {
+        deck.add(QuiddlerCard(
+          id: '${entry.key}_${cardId++}',
+          letters: entry.key,
+          points: entry.value.points,
+        ));
+      }
+    }
+
+    return deck..shuffle();
+  }
+}
+```
+
+### 7.3 Word Validator (word_validator.dart)
+
+```dart
+class WordValidator {
+  late final Set<String> _dictionary;
+  late final TrieNode _trie;  // For prefix checking (optional optimization)
+
+  Future<void> initialize() async {
+    final wordList = await rootBundle.loadString('assets/quiddler/dictionary/sowpods.txt');
+    _dictionary = wordList.split('\n').map((w) => w.trim().toLowerCase()).toSet();
+  }
+
+  bool isValid(String word) {
+    if (word.length < 2) return false;
+    final normalized = word.toLowerCase();
+    return _dictionary.contains(normalized);
+  }
+
+  /// Convert card sequence to word string
+  static String cardsToWord(List<QuiddlerCard> cards) {
+    return cards.map((c) => c.letters).join().toLowerCase();
+  }
+}
+```
+
+### 7.4 Socket Events
+
+```dart
+// Client → Server events
+class QuiddlerSocketEvents {
+  static const String draw = 'quiddler:draw';
+  static const String formWords = 'quiddler:form_words';
+  static const String discard = 'quiddler:discard';
+  static const String challenge = 'quiddler:challenge';
+  static const String goOut = 'quiddler:go_out';
+}
+
+// Server → Client events
+class QuiddlerServerEvents {
+  static const String stateUpdate = 'quiddler:state';
+  static const String turnChange = 'quiddler:turn';
+  static const String roundEnd = 'quiddler:round_end';
+  static const String gameEnd = 'quiddler:game_end';
+  static const String error = 'quiddler:error';
+}
+```
+
+---
+
+## 8. Implementation Phases
+
+### Phase 1: Setup & Core Models
+- [ ] Fork The Deck repository
+- [ ] Set up Flutter development environment with FVM
+- [ ] Create Quiddler directory structure
+- [ ] Implement QuiddlerCard, QuiddlerPlayer, QuiddlerField models
+- [ ] Implement QuiddlerMove types
+- [ ] Add shared types to thedeck_common
+
+### Phase 2: Game Engine
+- [ ] Implement DeckGenerator with correct card distribution
+- [ ] Implement WordValidator with dictionary loading
+- [ ] Build QuiddlerEngine with game rules
+- [ ] Implement scoring calculation with bonuses
+- [ ] Add round progression logic (3→10 cards)
+- [ ] Implement "going out" and final turn mechanics
+- [ ] Write unit tests for game engine
+
+### Phase 3: Server Integration
+- [ ] Create QuiddlerRoom extending GameRoom
+- [ ] Implement QuiddlerHandler for socket events
+- [ ] Add server-side move validation
+- [ ] Implement state synchronization
+- [ ] Handle player disconnection/reconnection
+
+### Phase 4: Client UI
+- [ ] Design and implement QuiddlerCardWidget
+- [ ] Build QuiddlerHand with card arrangement
+- [ ] Create WordBuilder for forming words (drag-and-drop)
+- [ ] Implement main QuiddlerBoard game screen
+- [ ] Add discard pile and draw deck visualization
+- [ ] Build Scoreboard component
+- [ ] Implement round/game end dialogs
+
+### Phase 5: Redux Integration
+- [ ] Define QuiddlerState
+- [ ] Create QuiddlerActions for all game events
+- [ ] Implement QuiddlerReducer
+- [ ] Connect UI to Redux store
+- [ ] Handle optimistic updates
+
+### Phase 6: Polish & Deploy
+- [ ] Add card animations (deal, draw, discard)
+- [ ] Implement challenge system
+- [ ] Add turn timer (optional)
+- [ ] Test multiplayer scenarios
+- [ ] Build and deploy web version
+- [ ] Test on iOS/Android (optional)
+- [ ] Set up hosting for server component
+
+---
+
+## 9. Card Distribution Reference
 
 Based on official Quiddler deck (118 cards):
 
+### Single Letters
 | Letter | Count | Points | | Letter | Count | Points |
 |--------|-------|--------|---|--------|-------|--------|
 | A | 10 | 2 | | N | 6 | 2 |
@@ -264,7 +499,7 @@ Based on official Quiddler deck (118 cards):
 | L | 4 | 3 | | Y | 4 | 4 |
 | M | 2 | 5 | | Z | 2 | 14 |
 
-**Double-letter cards:**
+### Double-Letter Cards
 | Card | Count | Points |
 |------|-------|--------|
 | QU | 2 | 9 |
@@ -273,152 +508,138 @@ Based on official Quiddler deck (118 cards):
 | TH | 2 | 9 |
 | CL | 2 | 10 |
 
----
-
-## 8. Directory Structure
-
-```
-quiddler-webapp/
-├── apps/
-│   ├── web/                    # React frontend
-│   │   ├── src/
-│   │   │   ├── components/
-│   │   │   │   ├── Card/
-│   │   │   │   ├── Hand/
-│   │   │   │   ├── GameBoard/
-│   │   │   │   ├── Lobby/
-│   │   │   │   └── ui/         # Shared UI components
-│   │   │   ├── hooks/
-│   │   │   ├── stores/         # Zustand stores
-│   │   │   ├── services/       # API & Socket clients
-│   │   │   ├── pages/
-│   │   │   └── types/
-│   │   └── package.json
-│   │
-│   └── server/                 # Node.js backend
-│       ├── src/
-│       │   ├── controllers/
-│       │   ├── services/
-│       │   │   ├── auth.ts
-│       │   │   ├── lobby.ts
-│       │   │   ├── game.ts
-│       │   │   └── dictionary.ts
-│       │   ├── game/
-│       │   │   ├── engine.ts   # Core game logic
-│       │   │   ├── deck.ts
-│       │   │   ├── scoring.ts
-│       │   │   └── validation.ts
-│       │   ├── socket/
-│       │   │   └── handlers.ts
-│       │   ├── db/
-│       │   │   └── schema.prisma
-│       │   └── types/
-│       └── package.json
-│
-├── packages/
-│   └── shared/                 # Shared types and constants
-│       ├── src/
-│       │   ├── types.ts
-│       │   ├── constants.ts
-│       │   └── cardData.ts
-│       └── package.json
-│
-├── turbo.json                  # Turborepo config
-├── package.json
-└── README.md
-```
+**Total: 118 cards**
 
 ---
 
-## 9. API Endpoints
+## 10. Game Rules Summary
 
-### REST API
+### Setup
+1. Shuffle deck of 118 letter cards
+2. Deal 3 cards to each player (round 1)
+3. Place remaining cards face-down as draw pile
+4. Turn top card face-up to start discard pile
 
-```
-Authentication:
-POST   /api/auth/register     - Create account
-POST   /api/auth/login        - Login, receive JWT
-POST   /api/auth/logout       - Invalidate session
-GET    /api/auth/me           - Get current user
+### Turn Flow
+1. **Draw**: Take top card from draw pile OR discard pile
+2. **Optional - Go Out**: If all cards form valid words, lay them down
+3. **Discard**: Place one card on discard pile
 
-Lobby:
-POST   /api/games             - Create new game room
-GET    /api/games             - List public game rooms
-GET    /api/games/:id         - Get game info
-POST   /api/games/:id/join    - Join a game room
+### Going Out
+- Must use ALL cards in valid words (min 2 letters each)
+- Once someone goes out, each other player gets ONE more turn
+- Other players can also go out on their final turn
 
-Users:
-GET    /api/users/:id/stats   - Get player statistics
-GET    /api/users/:id/history - Get game history
-```
+### Scoring
+- Cards in valid words: Add their point values
+- Unused cards: Subtract their point values
+- **Bonus +10**: Player with most words in the round
+- **Bonus +10**: Player with longest word (by letters, not cards)
+- Minimum round score: 0 (can't go negative)
+- Ties for bonuses: No bonus awarded
 
-### WebSocket Events
-See Section 6 for socket event definitions.
+### Rounds
+- Round 1: 3 cards per player
+- Round 2: 4 cards per player
+- ...
+- Round 8: 10 cards per player
 
----
-
-## 10. Minimum Viable Product (MVP)
-
-For initial release, prioritize:
-
-1. ✅ User registration/login
-2. ✅ Create/join game rooms (2-6 players)
-3. ✅ Full 8-round game with correct rules
-4. ✅ Real-time multiplayer synchronization
-5. ✅ Word validation against dictionary
-6. ✅ Score tracking with bonuses
-7. ✅ Basic responsive UI
-
-**Post-MVP enhancements:**
-- Challenge system
-- Turn timers
-- Player statistics/leaderboards
-- Spectator mode
-- Custom game settings
-- Friends list
-- Mobile app (React Native)
+### Winning
+- After 8 rounds, highest total score wins
 
 ---
 
-## 11. Risks & Mitigations
+## 11. MVP Features
+
+### Must Have
+- [x] Join/create game rooms (2-8 players)
+- [x] Full 8-round game with correct rules
+- [x] Draw from deck or discard pile
+- [x] Form words and go out
+- [x] Word validation against dictionary
+- [x] Score tracking with bonuses
+- [x] Real-time multiplayer sync
+- [x] Basic responsive UI
+
+### Nice to Have (Post-MVP)
+- [ ] Challenge system
+- [ ] Turn timer
+- [ ] Animated card movements
+- [ ] Sound effects
+- [ ] Player avatars
+- [ ] Game history/statistics
+- [ ] Spectator mode
+
+---
+
+## 12. Risks & Mitigations
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| Dictionary accuracy | High | Use established Scrabble dictionary |
-| Player disconnection | Medium | Auto-reconnection, game state persistence |
-| Cheating (hidden cards) | High | Server-authoritative state, never send other players' hands |
-| Concurrent modifications | Medium | Optimistic locking, turn-based prevents most issues |
-| Scale (many games) | Low (initially) | Redis for state, horizontal scaling later |
+| The Deck learning curve | Medium | Study existing games in codebase, follow patterns |
+| Dictionary size (2MB+) | Low | Compress, lazy load, or use API |
+| Flutter Web performance | Medium | Optimize renders, use CanvasKit |
+| Word validation edge cases | Low | Use established Scrabble dictionary |
+| Server hosting costs | Low | Start with free tier (Fly.io, Railway) |
 
 ---
 
-## 12. Testing Strategy
+## 13. Development Environment Setup
 
-- **Unit Tests**: Game engine, scoring, validation (Jest/Vitest)
-- **Integration Tests**: API endpoints, socket handlers
-- **E2E Tests**: Full game flows (Playwright/Cypress)
-- **Manual Testing**: UI/UX, edge cases, multiplayer scenarios
+### Prerequisites
+```bash
+# Install Flutter Version Manager
+dart pub global activate fvm
+
+# Clone The Deck
+git clone https://github.com/xajik/thedeck.git quiddler-app
+cd quiddler-app
+
+# Use correct Flutter version (check .fvmrc)
+fvm install
+fvm use
+
+# Get dependencies
+fvm flutter pub get
+
+# Run the app
+fvm flutter run -d chrome  # For web
+fvm flutter run            # For connected device
+```
+
+### Build Commands
+```bash
+# Web build
+fvm flutter build web --release
+
+# Android
+fvm flutter build appbundle --release
+
+# iOS
+fvm flutter build ipa --release
+```
 
 ---
 
-## 13. Next Steps
+## 14. Next Steps
 
-1. **Create new repository** for the project
-2. **Set up monorepo structure** with Turborepo
-3. **Scaffold backend** with Express + Socket.IO + TypeScript
-4. **Scaffold frontend** with Vite + React + TypeScript
-5. **Implement card deck** and basic game engine
-6. **Build authentication** flow
-7. **Create lobby system**
-8. **Develop game UI** with card components
-9. **Integrate multiplayer** real-time features
-10. **Deploy** to hosting platform
+1. **Fork The Deck** repository → create `quiddler-app` repo
+2. **Study The Deck** codebase - especially existing game implementations
+3. **Create Quiddler models** in thedeck_common
+4. **Implement game engine** with unit tests
+5. **Build server handlers** for game logic
+6. **Create UI components** for cards and board
+7. **Integrate Redux** state management
+8. **Test multiplayer** with multiple browsers
+9. **Deploy** web version
 
 ---
 
 ## References
 
+- [The Deck Repository](https://github.com/xajik/thedeck)
 - [Quiddler Official Rules (PDF)](https://www.playmonster.com/wp-content/uploads/2019/09/Quiddler_RULES.pdf)
 - [Quiddler Wikipedia](https://en.wikipedia.org/wiki/Quiddler)
-- [Socket.IO Documentation](https://socket.io/docs/v4/)
-- [React Documentation](https://react.dev/)
+- [Flutter Documentation](https://flutter.dev/docs)
+- [Flutter Web](https://flutter.dev/web)
+- [Socket.IO Dart Client](https://pub.dev/packages/socket_io_client)
