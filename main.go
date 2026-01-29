@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -26,13 +27,15 @@ const (
 )
 
 var (
-	verbose    bool
-	sshVerbose bool
-	quiet      bool
-	sshOpts    = []string{"-q", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"}
-	logFile    *os.File
-	ctx        context.Context
-	cancel     context.CancelFunc
+	verbose       bool
+	sshVerbose    bool
+	quiet         bool
+	sshOpts       = []string{"-q", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"}
+	logFile       *os.File
+	ctx           context.Context
+	cancel        context.CancelFunc
+	sshStarted    bool
+	terminalState *term.State
 )
 
 // printq prints to stdout unless quiet mode is enabled
@@ -104,8 +107,16 @@ func main() {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		printq("\nReceived interrupt, terminating SSH commands...\n")
-		cancel()
+		if sshStarted {
+			printq("\nReceived interrupt, terminating SSH commands...\n")
+			cancel()
+		} else {
+			if terminalState != nil {
+				term.Restore(int(syscall.Stdin), terminalState)
+			}
+			printq("\nReceived interrupt, exiting...\n")
+			os.Exit(1)
+		}
 	}()
 
 	// Open log file
@@ -275,7 +286,7 @@ func getConfig(site, dbDir string) Config {
 	config := Config{
 		Update: []string{
 			fmt.Sprintf("sudo %s --update", aideExe),
-			fmt.Sprintf("echo {SUDO_PW}|sudo -S mv %s/aide.db.new.gz %s/aide.db.gz", aideHome, aideHome),
+			fmt.Sprintf("echo {SUDO_PW_B64}|base64 -d|sudo -S mv %s/aide.db.new.gz %s/aide.db.gz", aideHome, aideHome),
 		},
 		Check: fmt.Sprintf("sudo %s --check", aideExe),
 	}
@@ -322,6 +333,30 @@ func getUpdateCommands(config Config) []string {
 	}
 }
 
+// encodePasswordBase64 returns a base64-encoded version of the password
+// for safe transmission through shell commands
+func encodePasswordBase64(password string) string {
+	return base64.StdEncoding.EncodeToString([]byte(password))
+}
+
+// containsShellSpecialChars checks if a string contains characters that are
+// special in shell contexts and could cause issues
+func containsShellSpecialChars(s string) bool {
+	specialChars := `'"$` + "`" + `\!#&*(){}[]|;<>?~`
+	for _, c := range s {
+		if strings.ContainsRune(specialChars, c) {
+			return true
+		}
+	}
+	return false
+}
+
+// escapeForSingleQuotes escapes a string for use within single quotes in shell
+// The only character that needs escaping in single quotes is the single quote itself
+func escapeForSingleQuotes(s string) string {
+	return strings.ReplaceAll(s, "'", `'\''`)
+}
+
 // runRemote executes a command and returns the exit code
 // If out is nil, output goes to stdout/stderr; otherwise it's captured
 // Returns 0 on success, or the exit code on failure
@@ -339,6 +374,7 @@ func runRemote(cmdLine string, out *bytes.Buffer) int {
 		}
 	}
 
+	sshStarted = true
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", cmdLine)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
@@ -458,34 +494,59 @@ func updateSite(site, dbDir string) error {
 	// Check if we need sudo password
 	needsPassword := false
 	for _, cmd := range updateCmds {
-		if strings.Contains(cmd, "{SUDO_PW}") {
+		if strings.Contains(cmd, "{SUDO_PW}") || strings.Contains(cmd, "{SUDO_PW_B64}") {
 			needsPassword = true
 			break
 		}
 	}
 
 	var password string
+	var passwordBase64 string
 	if needsPassword {
 		fmt.Print("Enter sudo password: ")
 
+		// Save terminal state so signal handler can restore it
+		terminalState, _ = term.GetState(int(syscall.Stdin))
 		bytePassword, err := term.ReadPassword(int(syscall.Stdin))
+		terminalState = nil // Clear after ReadPassword restores it
 		if err != nil {
 			return fmt.Errorf("failed to read password: %w", err)
 		}
 		fmt.Println() // newline after password input
 		password = string(bytePassword)
+		passwordBase64 = encodePasswordBase64(password)
 	}
 
 	// Execute each update command
 	for i := range updateCmds {
 		cmd := updateCmds[i]
 		if password != "" {
-			cmd = strings.ReplaceAll(cmd, "{SUDO_PW}", password)
+			// Replace base64 placeholder first (preferred method)
+			cmd = strings.ReplaceAll(cmd, "{SUDO_PW_B64}", passwordBase64)
+			// Also support legacy plain-text placeholder (with escaping)
+			if strings.Contains(cmd, "{SUDO_PW}") {
+				if containsShellSpecialChars(password) {
+					fmt.Fprintf(os.Stderr, "Warning: password contains special characters. Consider using {SUDO_PW_B64} placeholder with base64 decoding.\n")
+				}
+				cmd = strings.ReplaceAll(cmd, "{SUDO_PW}", escapeForSingleQuotes(password))
+			}
 		}
 
 		sshCmd := buildSSHCommand(site, cmd)
-		if exitCode := runRemote(sshCmd, nil); exitCode != 0 {
-			return fmt.Errorf("command failed with exit status %d", exitCode)
+		exitCode := runRemote(sshCmd, nil)
+
+		// For the AIDE command (first in sequence), exit codes 1-7 indicate
+		// AIDE status codes (e.g., 7 = changes detected), not failures.
+		// Exit codes > 7 indicate actual AIDE problems (e.g., config errors).
+		// For subsequent commands (mv, etc.), any non-zero is an error.
+		if i == 0 {
+			if exitCode > 7 || exitCode < 0 {
+				return fmt.Errorf("AIDE command failed with exit status %d", exitCode)
+			}
+		} else {
+			if exitCode != 0 {
+				return fmt.Errorf("command failed with exit status %d", exitCode)
+			}
 		}
 	}
 
